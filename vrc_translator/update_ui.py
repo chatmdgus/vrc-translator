@@ -17,6 +17,8 @@ class UpdateBar:
         self.root = win.root
         self.before = before            # 이 위젯 앞에 끼워 넣는다
         self.busy = False
+        self.auto = False
+        self.ready = None
         self.result = None
         self.frame = tk.Frame(self.root, bg=BG, padx=12, pady=7)
         self.msg = tk.Label(self.frame, text="", bg=BG, fg=P["text"], font=(FONT, 9, "bold"),
@@ -94,11 +96,16 @@ class UpdateBar:
         self.result = res
         if self.busy or res is None:
             return
+        if self.ready is not None:
+            return                      # 이미 받아 둠 (끌 때 적용)
         if res.update:
             p = res.update
             print(f"[update] v{updater.VERSION} → v{p.version}: {p}")
-            self._show(t("u.new", v=p.version, size=updater.fmt_size(p.size)),
-                       [(t("u.btn"), lambda: self.start(p))])
+            if self.win.ui.get("auto_update", True):
+                self.start(p, auto=True)            # 알아서 받아 두고, 끌 때 적용
+            else:
+                self._show(t("u.new", v=p.version, size=updater.fmt_size(p.size)),
+                           [(t("u.btn"), lambda: self.start(p))])
         elif res.gpu and updater.nvidia_present() and not self.win.ui.get("gpu_offer_off"):
             p = res.gpu
             self._show(t("u.gpu", size=updater.fmt_size(p.size)),
@@ -112,19 +119,27 @@ class UpdateBar:
         self._hide()
 
     # ------------------------------------------------ 받기·적용
-    def start(self, plan):
+    def start(self, plan, auto=False):
+        """auto: 시작할 때 알아서 받기 → 다 받으면 '다음에 켤 때 적용' (창을 닫을 때 교체).
+        버튼으로 누른 건 받자마자 적용하고 다시 시작."""
         if self.busy:
             return
         self.busy = True
-        self._show(t("u.dl", pct=0, done="0 MB", total=updater.fmt_size(plan.size)), progress=0)
+        self.auto = auto
+        self._show(self._dl_text(plan, 0, plan.size), progress=0)
         threading.Thread(target=self._run, args=(plan,), daemon=True, name="update-dl").start()
+
+    def _dl_text(self, plan, done, total):
+        pct = int(done / total * 100) if total else 100
+        if self.auto:
+            return t("u.auto_dl", v=plan.version, pct=pct)
+        return t("u.dl", pct=pct, done=updater.fmt_size(done), total=updater.fmt_size(total))
 
     def _run(self, plan):
         def progress(stage, done, total):
             if stage == "dl":
                 frac = done / total if total else 1.0
-                text = t("u.dl", pct=int(frac * 100), done=updater.fmt_size(done),
-                         total=updater.fmt_size(total))
+                text = self._dl_text(plan, done, total)
             else:
                 frac, text = 1.0, t("u.unpack")
             self._call(lambda: self._show(text, progress=frac))
@@ -136,9 +151,19 @@ class UpdateBar:
         except Exception as e:
             self._call(lambda: self._fail(updater.UpdateError("net", f"{type(e).__name__}: {e}"), plan))
             return
-        self._call(lambda: self._apply(plan))
+        self._call(lambda: self._downloaded(plan))
+
+    def _downloaded(self, plan):
+        if not self.auto or "gpu" in plan.packs:
+            self._apply(plan)
+            return
+        self.ready = plan
+        updater.set_pending(plan)
+        print(f"[update] v{plan.version} ready, will apply on exit")
+        self._show(t("u.ready", v=plan.version), [(t("u.restart_now"), lambda: self._apply(plan))])
 
     def _apply(self, plan):
+        updater.set_pending(None)
         self._show(t("u.apply"), progress=1.0)
         self.root.update_idletasks()
         try:

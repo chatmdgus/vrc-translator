@@ -309,6 +309,9 @@ def restart_to_settings():
     """메인 창의 「설정」 버튼: 설정 창으로 다시 시작한다."""
     import subprocess
     if getattr(sys, "frozen", False):
+        from . import updater
+        if updater.apply_pending(restart_args=["--settings"]):
+            os._exit(0)                      # 도우미가 파일을 옮긴 뒤 설정 창으로 켬
         args, cwd = [sys.executable, "--settings"], None
     else:
         args = [sys.executable, "-m", "vrc_translator.main", "--settings"]
@@ -406,6 +409,11 @@ def main():
         # 창을 닫으면 무조건 프로세스까지 종료한다.
         # (오디오 캡처·GPU·번역 요청 스레드가 남아 있으면 exe가 백그라운드에 계속 남아서
         #  다시 빌드하거나 폴더를 지울 때 '사용 중' 오류가 났음)
+        try:
+            from . import updater
+            updater.apply_pending()          # 다 받아 둔 업데이트는 끌 때 교체 → 다음에 켜면 새 버전
+        except Exception as e:
+            print(f"[update] {e}")
         try:
             sys.stdout.flush()
             sys.stderr.flush()

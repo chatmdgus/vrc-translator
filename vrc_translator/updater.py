@@ -253,6 +253,14 @@ def _download(url, part, size, add):
 
 
 def download(plan, progress=None, root=None, cancel=None):
+    _busy.set()
+    try:
+        return _download_plan(plan, progress, root, cancel)
+    finally:
+        _busy.clear()
+
+
+def _download_plan(plan, progress=None, root=None, cancel=None):
     """plan 의 묶음을 받아서 필요한 파일만 _update/new 에 풀어 둔다.
     progress(stage, done, total): stage = "dl" | "unpack" """
     root = root or app_root()
@@ -358,9 +366,9 @@ def _new_local_manifest(plan):
     return m
 
 
-def apply(plan, root=None):
+def apply(plan, root=None, restart_args=None):
     """받아 둔 파일로 교체. 성공하면 "swapped", PowerShell 도우미에게 맡겼으면 "helper".
-    (helper 면 호출한 쪽이 바로 종료해야 한다)"""
+    (helper 면 호출한 쪽이 바로 종료해야 한다. restart_args 가 None 이 아니면 도우미가 끝나고 다시 켬)"""
     root = root or app_root()
     stage = root / STAGE_DIR
     new_dir = stage / "new"
@@ -395,7 +403,7 @@ def apply(plan, root=None):
                 os.replace(old, dst)
             except OSError as e2:
                 print(f"[update] rollback {dst}: {e2}")
-        _start_helper(plan, root, new_dir, tmp_manifest, mpath)
+        _start_helper(plan, root, new_dir, tmp_manifest, mpath, restart_args)
         return "helper"
     shutil.rmtree(new_dir, ignore_errors=True)
     return "swapped"
@@ -423,18 +431,21 @@ foreach ($r in $job.files) {
   if (-not (Retry { Move-Item -LiteralPath $src -Destination $dst -Force -ErrorAction Stop })) { $ok = $false }
 }
 if ($ok) { Copy-Item -LiteralPath $job.manifest_new -Destination $job.manifest -Force }
-Start-Process -FilePath $job.exe -ArgumentList $job.args
+if ($job.restart) {
+  if ($job.args.Count -gt 0) { Start-Process -FilePath $job.exe -ArgumentList $job.args }
+  else { Start-Process -FilePath $job.exe }
+}
 """
 
 
-def _start_helper(plan, root, new_dir, tmp_manifest, mpath):
+def _start_helper(plan, root, new_dir, tmp_manifest, mpath, restart_args=None):
     stage = root / STAGE_DIR
     job = {
         "pid": os.getpid(), "root": str(root), "new": str(new_dir),
         "files": [r.replace("/", "\\") for r in plan.files],
         "remove": [r.replace("/", "\\") for r in plan.removed],
         "manifest_new": str(tmp_manifest), "manifest": str(mpath),
-        "exe": sys.executable, "args": _restart_args() or [""],
+        "exe": sys.executable, "restart": restart_args is not None, "args": list(restart_args or []),
     }
     jpath = stage / "job.json"
     with open(jpath, "w", encoding="utf-8") as f:
@@ -449,6 +460,31 @@ def _start_helper(plan, root, new_dir, tmp_manifest, mpath):
 
 def _restart_args():
     return [a for a in sys.argv[1:] if a != "--settings"]
+
+
+_pending = {"plan": None}
+_busy = threading.Event()        # 받는 중이면 정리(cleanup)가 대기 폴더를 건드리지 않게
+
+
+def set_pending(plan):
+    _pending["plan"] = plan
+
+
+def apply_pending(restart_args=None):
+    """다 받아 둔 업데이트가 있으면 지금 적용 (창을 닫을 때·설정으로 다시 시작할 때).
+    도우미에게 맡겼으면 True (호출한 쪽은 다시 켜지 말고 바로 종료)."""
+    plan = _pending["plan"]
+    if plan is None or not frozen():
+        return False
+    _pending["plan"] = None
+    try:
+        how = apply(plan, restart_args=restart_args)
+        mark_updated(VERSION, plan.version)
+        print(f"[update] applied on exit ({how}) → v{plan.version}")
+        return how == "helper"
+    except Exception as e:
+        print(f"[update] apply on exit failed: {type(e).__name__}: {e}")
+        return False
 
 
 def mark_updated(old_version, new_version):
@@ -482,12 +518,33 @@ def restart():
 
 
 def cleanup_async():
-    """지난 업데이트에서 남은 *.vrcold 와 대기 폴더 지우기 (예전 프로세스가 아직 안 꺼졌을 수 있어 몇 번 재시도)."""
+    """지난 업데이트에서 남은 *.vrcold 와 대기 폴더 지우기.
+    대기 폴더는 처음 한 번만(자동 받기 시작 전), *.vrcold 는 예전 프로세스가 늦게 꺼질 수 있어 몇 번 재시도."""
     if not frozen():
         return
 
+    def clean_stage(root):
+        stage = root / STAGE_DIR
+        if not stage.exists() or _busy.is_set():
+            return
+        if (stage / "job.json").exists():
+            shutil.rmtree(stage, ignore_errors=True)            # 도우미가 끝낸 뒤
+            return
+        for p in stage.iterdir():
+            if p.is_dir():
+                shutil.rmtree(p, ignore_errors=True)
+            elif not p.name.endswith((".part", ".zip")):         # 받다 만 묶음은 이어 받기용으로 둠
+                try:
+                    p.unlink()
+                except OSError:
+                    pass
+
     def run():
         root = app_root()
+        try:
+            clean_stage(root)
+        except Exception as e:
+            print(f"[update] cleanup: {e}")
         for delay in (1, 4, 15, 60):
             time.sleep(delay)
             left = 0
@@ -496,18 +553,6 @@ def cleanup_async():
                     p.unlink()
                 except OSError:
                     left += 1
-            stage = root / STAGE_DIR
-            if stage.exists() and not (stage / "job.json").exists():
-                for p in stage.iterdir():
-                    if p.is_dir():
-                        shutil.rmtree(p, ignore_errors=True)
-                    elif not p.name.endswith((".part", ".zip")):      # 받다 만 묶음은 이어 받기용으로 둠
-                        try:
-                            p.unlink()
-                        except OSError:
-                            pass
-            elif (stage / "job.json").exists():
-                shutil.rmtree(stage, ignore_errors=True)         # 도우미가 끝낸 뒤
             if not left:
                 return
     threading.Thread(target=run, daemon=True, name="update-cleanup").start()
