@@ -212,12 +212,17 @@ def backend(cfg):
         mic_target = mic_cfg.get("target_lang", "ja")
         if mic_target == my_lang:                     # 설정이 꼬였을 때 대비
             mic_target = "ja" if my_lang != "ja" else "ko"
-        # 내 말은 내 언어로 고정: 언어 감지를 건너뛰어 빠르고 정확 (Google에도 한 번만 요청)
-        mic_allowed = [my_lang]
+        # 내 언어만(mine): 언어 감지를 건너뛰어 빠름 (Google에도 한 번만 요청)
+        # 둘 다(both): 상대 언어로 말해도 받아적음 (예: 일본인이 한국어로 말하면 카타카나가 아니라 한글로,
+        #   번역 없이 그대로 챗박스에). 결과 고르기는 cloud_stt.pick_lang (Whisper 언어 감지 + 글자 검사)
+        if mic_cfg.get("speak", "both") == "mine":
+            mic_source, mic_allowed = my_lang, [my_lang]
+        else:
+            mic_source, mic_allowed = None, [my_lang, mic_target]
         pipelines.append(Pipeline(
             "mic", AudioCapture("mic", mic_cfg.get("device")),
             {**base_vad, **mic_cfg.get("vad", {})}, stt, translator,
-            my_lang, mic_target,
+            mic_source, mic_target,
             to_chatbox, gate,
             on_speech=(lambda: chatbox.typing(True)) if typing else None,
             on_idle=(lambda: chatbox.typing(False)) if typing else None,

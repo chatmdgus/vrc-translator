@@ -44,6 +44,7 @@ DEFAULTS = {
         "device": None,
         "source_lang": None,
         "target_lang": "ja",
+        "speak": "both",               # 내가 말하는 언어: both(내 언어 + 챗박스 언어 자동 판별) | mine(내 언어만, 조금 더 빠름)
         "chatbox_show_original": True,  # 챗박스에 번역문 + 아래 줄에 원문
         "typing_indicator": True,       # 말하는 동안 챗박스에 '입력 중' 표시
         "respect_vrchat_mute": True,

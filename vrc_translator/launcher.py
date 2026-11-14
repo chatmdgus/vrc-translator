@@ -274,6 +274,9 @@ def run_launcher(cfg, on_root=None):
         want = cfg["mic"].get("target_lang", "ja")
         chat_lang, _ = c_mic.row(t("l.chat_lang"), lambda p: Segmented(
             p, others, want if want != me else others[0][1], command=lambda v: on_chat_lang()))
+        speak, _ = c_mic.row(t("l.speak"), lambda p: Segmented(
+            p, [(t("l.speak.both"), "both"), (t("l.speak.mine"), "mine")],
+            cfg["mic"].get("speak", "both")))
         w["formality"], _ = c_mic.row(t("l.formality"), lambda p: Segmented(
             p, [(t("l.f.default"), "default"), (t("l.f.less"), "prefer_less"), (t("l.f.more"), "prefer_more")],
             cfg["translator"].get("formality", "default")))
@@ -385,7 +388,8 @@ def run_launcher(cfg, on_root=None):
             cfg["mic"]["enabled"] = mic_on.get()
             cfg["mic"]["device"] = None if mic_dev.get() == dev_default else mic_dev.get()
             tc["formality"] = w["formality"].get()
-            cfg["mic"]["source_lang"] = me            # 내 말은 내 언어로 고정 (빠르고 정확)
+            cfg["mic"]["source_lang"] = None          # 실제 인식 언어는 speak 설정으로 정함 (main.py)
+            cfg["mic"]["speak"] = speak.get()
             cfg["mic"]["target_lang"] = chat_lang.get()
             cfg["mic"]["chatbox_show_original"] = chat_orig.get()
             cfg["listen"]["enabled"] = lis_on.get()
