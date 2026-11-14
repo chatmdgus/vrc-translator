@@ -38,6 +38,9 @@ jobs:
   release:
     runs-on: windows-latest
     timeout-minutes: 90
+    env:
+      PYTHONUTF8: "1"               # Windows 러너 기본 출력(cp1252)에서 한글 print 가 죽지 않게
+      PYTHONIOENCODING: utf-8
     steps:
       - uses: actions/checkout@v4
 
