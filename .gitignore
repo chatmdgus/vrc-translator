@@ -1,0 +1,11 @@
+preset.yaml
+.venv-build/
+build/
+dist/
+*.spec
+__pycache__/
+relay/.env
+relay/token-usage.json
+.preset-tmp/
+.venv*/
+upload/

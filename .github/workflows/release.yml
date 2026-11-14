@@ -1,0 +1,127 @@
+# VRC Translator 자동 배포
+# main 에 푸시했을 때 vrc_translator/version.py 버전이 사이트에 올라간 버전보다 높으면
+# Windows 에서 빌드 → release.py → 큰 묶음은 kuruma-downloads 릴리스(translator-latest)에, 매니페스트·app 묶음은 사이트 저장소에 올린다.
+# 버전을 안 올린 푸시는 버전 확인만 하고 끝남.
+#
+# 필요한 Secrets (이 저장소 Settings → Secrets and variables → Actions)
+#   PRESET_YAML     : C:\dev\preset.yaml 내용 그대로 (릴레이 주소·토큰)
+#   DOWNLOADS_TOKEN : chatmdgus/kuruma-downloads 에 Contents 읽기·쓰기 권한이 있는 토큰
+name: release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "vrc_translator/**"
+      - "app.py"
+      - "build.py"
+      - "release.py"
+      - "hooks/**"
+      - "requirements*.txt"
+      - "README.md"
+      - ".github/workflows/release.yml"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "버전을 안 올려도 다시 배포"
+        type: boolean
+        default: false
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 사이트 저장소 받기
+        uses: actions/checkout@v4
+        with:
+          repository: chatmdgus/kuruma-downloads
+          token: ${{ secrets.DOWNLOADS_TOKEN }}
+          path: site
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+
+      - name: 버전 확인
+        id: ver
+        shell: python
+        env:
+          FORCE: ${{ inputs.force }}
+        run: |
+          import json, os, re
+          v = re.search(r'VERSION\s*=\s*"([^"]+)"', open("vrc_translator/version.py", encoding="utf-8").read()).group(1)
+          try:
+              prev = json.load(open("site/files/translator-latest.json", encoding="utf-8"))["version"]
+          except FileNotFoundError:
+              prev = "0"
+          t = lambda s: tuple(int(x) for x in s.split("."))
+          force = os.environ.get("FORCE") == "true"
+          go = t(v) > t(prev) or force
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+              f.write(f"version={v}\nprev={prev}\ngo={'true' if go else 'false'}\nforce={'--force' if force else ''}\n")
+          print(f"version.py {v} / 사이트 {prev} → {'배포' if go else '건너뜀 (버전을 올리면 배포)'}")
+
+      - name: 패키지 설치
+        if: steps.ver.outputs.go == 'true'
+        run: python -m pip install -r requirements-build.txt
+
+      - name: 프리셋 넣기
+        if: steps.ver.outputs.go == 'true'
+        shell: pwsh
+        env:
+          PRESET_YAML: ${{ secrets.PRESET_YAML }}
+        run: |
+          if (-not $env:PRESET_YAML) { throw "PRESET_YAML secret 이 없어요" }
+          [IO.File]::WriteAllText("$PWD\preset.yaml", $env:PRESET_YAML, [Text.UTF8Encoding]::new($false))
+
+      - name: 빌드
+        if: steps.ver.outputs.go == 'true'
+        run: python build.py --preset preset.yaml
+
+      - name: 배포 파일 만들기
+        if: steps.ver.outputs.go == 'true'
+        run: python release.py --site site --out upload ${{ steps.ver.outputs.force }}
+
+      - name: 릴리스에 큰 묶음 올리기
+        if: steps.ver.outputs.go == 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.DOWNLOADS_TOKEN }}
+        run: |
+          $files = @(Get-ChildItem upload -Filter *.zip)
+          if ($files.Count -gt 0) {
+            gh release upload translator-latest @($files.FullName) --clobber --repo chatmdgus/kuruma-downloads
+            if ($LASTEXITCODE) { throw "릴리스 업로드 실패" }
+          } else {
+            Write-Host "새로 올릴 큰 묶음 없음"
+          }
+          gh release edit translator-latest --notes "v${{ steps.ver.outputs.version }}" --repo chatmdgus/kuruma-downloads
+
+      - name: 사이트 푸시 (매니페스트는 맨 마지막)
+        if: steps.ver.outputs.go == 'true'
+        shell: pwsh
+        working-directory: site
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add files/translator-app.zip files/translator-latest.json
+          git commit -m "VRC Translator v${{ steps.ver.outputs.version }}"
+          for ($i = 0; $i -lt 3; $i++) {
+            git pull --rebase
+            git push
+            if (-not $LASTEXITCODE) { exit 0 }
+            Start-Sleep 5
+          }
+          throw "사이트 푸시 실패"

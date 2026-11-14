@@ -1,0 +1,13 @@
+faster-whisper==1.2.1
+ctranslate2==4.8.2
+PyAudioWPatch
+webrtcvad-wheels
+numpy
+scipy
+python-osc
+pyyaml
+Pillow>=10.1
+deepl
+openvr
+requests
+soundfile

@@ -1,0 +1,5 @@
+-r requirements.txt
+pyinstaller>=6.0
+# GPU 버전 exe에 CUDA 라이브러리 동봉용 — 처음 GPU로 정상 동작했던 버전으로 고정
+nvidia-cublas-cu12==12.9.2.10
+nvidia-cudnn-cu12==9.26.0.51
